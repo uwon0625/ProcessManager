@@ -81,6 +81,17 @@ namespace ProcessManager
             Process[] processes = Process.GetProcesses();
             var processGroups = processes.GroupBy(p => GetProcessDescription(p, false));
 
+            // First, try to kill any processes that match blacklisted descriptions
+            foreach (var group in processGroups)
+            {
+                if (blacklistedDescriptions.Contains(group.Key))
+                {
+                    TryKillProcessesByDescription(group.Key);
+                }
+            }
+
+            // Then refresh the list (excluding blacklisted ones)
+            processGroups = Process.GetProcesses().GroupBy(p => GetProcessDescription(p, false));
             foreach (var group in processGroups.OrderBy(g => g.Key))
             {
                 if (!blacklistedDescriptions.Contains(group.Key) && 
