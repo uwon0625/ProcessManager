@@ -12,6 +12,7 @@ namespace ProcessManager
         private System.Windows.Forms.Timer refreshTimer = new System.Windows.Forms.Timer();
         private Dictionary<string, int> killAttempts = new Dictionary<string, int>();
         private HashSet<string> blacklistedDescriptions = new HashSet<string>();
+        private HashSet<string> blacklistPatterns = new HashSet<string>();
         private string searchText = string.Empty;
         private const string CONFIG_FILE = "blacklist.config";
 
@@ -23,10 +24,12 @@ namespace ProcessManager
             RefreshProcessList();
         }
 
+
         private void LoadBlacklistConfig()
         {
             try
             {
+                blacklistPatterns.Clear();
                 if (File.Exists(CONFIG_FILE))
                 {
                     var patterns = File.ReadAllLines(CONFIG_FILE)
@@ -35,28 +38,7 @@ namespace ProcessManager
 
                     foreach (var pattern in patterns)
                     {
-                        if (pattern.Contains("*"))
-                        {
-                            // Convert wildcard pattern to regex
-                            var regex = new System.Text.RegularExpressions.Regex(
-                                "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
-                                    .Replace("\\*", ".*") + "$",
-                                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-                            // Find all matching processes
-                            var matchingProcesses = Process.GetProcesses()
-                                .Select(p => GetProcessDescription(p, false))
-                                .Where(desc => regex.IsMatch(desc));
-
-                            foreach (var match in matchingProcesses)
-                            {
-                                blacklistedDescriptions.Add(match);
-                            }
-                        }
-                        else
-                        {
-                            blacklistedDescriptions.Add(pattern);
-                        }
+                        blacklistPatterns.Add(pattern);
                     }
                 }
             }
@@ -72,8 +54,7 @@ namespace ProcessManager
             refreshTimer.Interval = 60000; // Refresh every minute
             refreshTimer.Tick += RefreshTimer_Tick;
             refreshTimer.Start();
-        }
-
+        }        
         private void RefreshTimer_Tick(object sender, EventArgs e)
         {
             RefreshProcessList();
@@ -118,6 +99,18 @@ namespace ProcessManager
         {
             searchText = txtSearch.Text.Trim().ToLower();
             RefreshProcessList();
+        }        
+        private bool IsProcessMatchingPattern(string processName, string pattern)
+        {
+            if (pattern.Contains("*"))
+            {
+                var regex = new System.Text.RegularExpressions.Regex(
+                    "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+                        .Replace("\\*", ".*") + "$",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                return regex.IsMatch(processName);
+            }
+            return processName.Equals(pattern, StringComparison.OrdinalIgnoreCase);
         }
 
         private void RefreshProcessList()
@@ -127,31 +120,29 @@ namespace ProcessManager
             Process[] processes = Process.GetProcesses();
             var processGroups = processes.GroupBy(p => GetProcessDescription(p, false));
 
-            // First, try to kill any processes that match blacklisted descriptions
+            // Kill processes that match patterns or are manually blacklisted
             foreach (var group in processGroups)
             {
-                if (blacklistedDescriptions.Contains(group.Key) ||
-                    blacklistedDescriptions.Any(pattern => 
-                        pattern.Contains("*") && 
-                        new System.Text.RegularExpressions.Regex(
-                            "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
-                                .Replace("\\*", ".*") + "$",
-                            System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-                        .IsMatch(group.Key)))
+                bool isBlacklisted = blacklistedDescriptions.Contains(group.Key) ||
+                                     blacklistPatterns.Any(pattern => IsProcessMatchingPattern(group.Key, pattern));
+
+                if (isBlacklisted)
                 {
                     TryKillProcessesByDescription(group.Key);
                 }
             }
 
-            // Then refresh the list (excluding blacklisted ones)
+            // Update process list display
             processGroups = Process.GetProcesses().GroupBy(p => GetProcessDescription(p, false));
             foreach (var group in processGroups.OrderBy(g => g.Key))
             {
-                if (!blacklistedDescriptions.Contains(group.Key) && 
+                bool isBlacklisted = blacklistedDescriptions.Contains(group.Key) ||
+                                     blacklistPatterns.Any(pattern => IsProcessMatchingPattern(group.Key, pattern));
+
+                if (!isBlacklisted && 
                     (string.IsNullOrEmpty(searchText) || 
                      group.Key.ToLower().Contains(searchText)))
                 {
-                    var process = group.First();
                     string description = group.Key;
                     if (killAttempts.ContainsKey(description))
                     {
@@ -172,6 +163,23 @@ namespace ProcessManager
             var processGroups = currentProcesses.GroupBy(p => GetProcessDescription(p, false));
             var runningDescriptions = processGroups.ToDictionary(g => g.Key, g => g.Count());
 
+            // Add pattern-based items
+            foreach (string pattern in blacklistPatterns)
+            {
+                var matchingProcesses = processGroups
+                    .Where(g => IsProcessMatchingPattern(g.Key, pattern))
+                    .Sum(g => g.Count());
+
+                string displayText = $"[Pattern] {pattern}";
+                if (matchingProcesses > 0)
+                {
+                    displayText += $" (Running: {matchingProcesses})";
+                }
+                var item = lstBlacklist.Items.Add(displayText);
+                item.Tag = pattern;
+            }
+
+            // Add manually selected items
             foreach (string description in blacklistedDescriptions.ToList())
             {
                 string displayText;
@@ -179,8 +187,6 @@ namespace ProcessManager
                 {
                     int count = runningDescriptions[description];
                     displayText = $"{description} (Running: {count})";
-                    // Try to kill any running instances
-                    TryKillProcessesByDescription(description);
                 }
                 else
                 {
