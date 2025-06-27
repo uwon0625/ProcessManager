@@ -13,12 +13,58 @@ namespace ProcessManager
         private Dictionary<string, int> killAttempts = new Dictionary<string, int>();
         private HashSet<string> blacklistedDescriptions = new HashSet<string>();
         private string searchText = string.Empty;
+        private const string CONFIG_FILE = "blacklist.config";
 
         public MainForm()
         {
             InitializeComponent();
+            LoadBlacklistConfig();
             SetupTimer();
             RefreshProcessList();
+        }
+
+        private void LoadBlacklistConfig()
+        {
+            try
+            {
+                if (File.Exists(CONFIG_FILE))
+                {
+                    var patterns = File.ReadAllLines(CONFIG_FILE)
+                        .Where(line => !string.IsNullOrWhiteSpace(line))
+                        .Select(line => line.Trim());
+
+                    foreach (var pattern in patterns)
+                    {
+                        if (pattern.Contains("*"))
+                        {
+                            // Convert wildcard pattern to regex
+                            var regex = new System.Text.RegularExpressions.Regex(
+                                "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+                                    .Replace("\\*", ".*") + "$",
+                                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                            // Find all matching processes
+                            var matchingProcesses = Process.GetProcesses()
+                                .Select(p => GetProcessDescription(p, false))
+                                .Where(desc => regex.IsMatch(desc));
+
+                            foreach (var match in matchingProcesses)
+                            {
+                                blacklistedDescriptions.Add(match);
+                            }
+                        }
+                        else
+                        {
+                            blacklistedDescriptions.Add(pattern);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error loading blacklist configuration: {ex.Message}", "Error", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void SetupTimer()
@@ -84,7 +130,14 @@ namespace ProcessManager
             // First, try to kill any processes that match blacklisted descriptions
             foreach (var group in processGroups)
             {
-                if (blacklistedDescriptions.Contains(group.Key))
+                if (blacklistedDescriptions.Contains(group.Key) ||
+                    blacklistedDescriptions.Any(pattern => 
+                        pattern.Contains("*") && 
+                        new System.Text.RegularExpressions.Regex(
+                            "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+                                .Replace("\\*", ".*") + "$",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                        .IsMatch(group.Key)))
                 {
                     TryKillProcessesByDescription(group.Key);
                 }
